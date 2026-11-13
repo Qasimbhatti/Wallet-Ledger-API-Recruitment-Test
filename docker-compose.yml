@@ -1,0 +1,77 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: wallet
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+    # Tuned for an OLTP workload with a ~10M-row table on a laptop.
+    # synchronous_commit stays ON: an acknowledged credit/debit survives a crash.
+    command: >
+      postgres
+      -c max_connections=300
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c work_mem=8MB
+      -c maintenance_work_mem=512MB
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c max_wal_size=8GB
+      -c checkpoint_timeout=15min
+      -c checkpoint_completion_target=0.9
+      -c wal_compression=lz4
+      -c wal_level=minimal
+      -c max_wal_senders=0
+      -c jit=off
+      -c autovacuum_vacuum_scale_factor=0.05
+      -c autovacuum_analyze_scale_factor=0.02
+    shm_size: 1gb
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    init: true
+    ports:
+      - "8080:8080"
+    environment:
+      API_TOKEN: ${API_TOKEN:-recruitment-test-token}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: wallet
+      DB_USERNAME: wallet
+      DB_PASSWORD: wallet
+      # One FrankenPHP worker = one PHP thread = one DB connection. Kept above
+      # the ~100 concurrent clients of the load test so a hot user's waiting
+      # requests can never occupy every worker (see README, "hot users").
+      OCTANE_WORKERS: ${OCTANE_WORKERS:-128}
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  # Load generator: docker compose --profile loadtest run --rm k6
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["loadtest"]
+    user: "0:0" # so it can write results into the bind mount on Linux hosts
+    environment:
+      BASE_URL: http://app:8080
+      API_TOKEN: ${API_TOKEN:-recruitment-test-token}
+      SEED_USERS: ${SEED_USERS:-100000}
+      DURATION: ${DURATION:-60s}
+      VUS: ${VUS:-100}
+    volumes:
+      - ./loadtest:/loadtest
+    command: ["run", "/loadtest/ledger.js"]
+    depends_on:
+      - app
+
+volumes:
+  db-data:

@@ -1,0 +1,13 @@
+/.phpunit.cache
+/vendor
+/node_modules
+/storage/*.key
+/loadtest/results/*
+!/loadtest/results/.gitkeep
+.env
+.env.backup
+.phpunit.result.cache
+/.idea
+/.vscode
+# The assessment brief is confidential.
+*.pdf
