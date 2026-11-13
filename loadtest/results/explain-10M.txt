@@ -1,0 +1,55 @@
+
+== get_balance (user_000000) ==
+Index Scan using wallets_pkey on wallets  (cost=0.42..2.64 rows=1 width=8) (actual time=0.042..0.043 rows=1 loops=1)
+  Index Cond: ((user_id)::text = 'user_000000'::text)
+  Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=67
+Planning Time: 0.629 ms
+Execution Time: 0.082 ms
+
+== credit (user_000000) ==
+CTE Scan on wallet  (cost=0.04..0.06 rows=1 width=8) (actual time=0.176..0.178 rows=1 loops=1)
+  Buffers: shared hit=12
+  CTE wallet
+    ->  Insert on wallets w  (cost=0.00..0.01 rows=1 width=170) (actual time=0.173..0.175 rows=1 loops=1)
+          Conflict Resolution: UPDATE
+          Conflict Arbiter Indexes: wallets_pkey
+          Tuples Inserted: 0
+          Conflicting Tuples: 1
+          Buffers: shared hit=12
+          ->  Result  (cost=0.00..0.01 rows=1 width=170) (actual time=0.002..0.002 rows=1 loops=1)
+  CTE entry
+    ->  Insert on ledger_entries  (cost=0.00..0.03 rows=0 width=0) (actual time=0.513..0.513 rows=0 loops=1)
+          Buffers: shared hit=56
+          ->  CTE Scan on wallet wallet_1  (cost=0.00..0.03 rows=1 width=182) (actual time=0.138..0.139 rows=1 loops=1)
+                Buffers: shared hit=10
+Planning Time: 0.076 ms
+Execution Time: 0.842 ms
+
+== debit (user_000000) ==
+Result  (cost=5.32..5.33 rows=1 width=16) (actual time=0.069..0.070 rows=1 loops=1)
+  Buffers: shared hit=10
+  CTE wallet
+    ->  Update on wallets  (cost=0.42..2.64 rows=1 width=22) (actual time=0.054..0.055 rows=1 loops=1)
+          Buffers: shared hit=6
+          ->  Index Scan using wallets_pkey on wallets  (cost=0.42..2.64 rows=1 width=22) (actual time=0.022..0.023 rows=1 loops=1)
+                Index Cond: ((user_id)::text = 'user_000000'::text)
+                Filter: (balance >= '1'::bigint)
+                Buffers: shared hit=4
+  CTE entry
+    ->  Insert on ledger_entries  (cost=0.00..0.03 rows=0 width=0) (actual time=0.033..0.033 rows=0 loops=1)
+          Buffers: shared hit=7
+          ->  CTE Scan on wallet  (cost=0.00..0.03 rows=1 width=182) (actual time=0.005..0.006 rows=1 loops=1)
+                Buffers: shared hit=1
+  InitPlan 3
+    ->  CTE Scan on wallet wallet_1  (cost=0.00..0.02 rows=1 width=8) (actual time=0.056..0.057 rows=1 loops=1)
+          Buffers: shared hit=6
+  InitPlan 4
+    ->  Index Scan using wallets_pkey on wallets wallets_1  (cost=0.42..2.64 rows=1 width=8) (actual time=0.010..0.010 rows=1 loops=1)
+          Index Cond: ((user_id)::text = 'user_000000'::text)
+          Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=8
+Planning Time: 0.202 ms
+Execution Time: 0.195 ms

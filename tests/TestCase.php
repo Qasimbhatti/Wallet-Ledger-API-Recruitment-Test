@@ -13,15 +13,26 @@ abstract class TestCase extends BaseTestCase
     /** migrate:fresh must also drop the ledger_entry_type enum. */
     protected bool $dropTypes = true;
 
+    /**
+     * Guard rail, checked as soon as the app boots and therefore BEFORE
+     * RefreshDatabase runs migrate:fresh: a misconfigured environment must
+     * never wipe the live database.
+     */
+    public function createApplication()
+    {
+        $app = parent::createApplication();
+
+        $database = $app['config']->get('database.connections.pgsql.database');
+        if ($database !== 'wallet_test') {
+            throw new RuntimeException("Tests must run against the wallet_test database, not [{$database}].");
+        }
+
+        return $app;
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
-
-        // Guard rail: the in-process suite runs migrate:fresh; it must never
-        // run against the live database.
-        if (DB::connection()->getDatabaseName() !== 'wallet_test') {
-            throw new RuntimeException('Feature tests must run against the wallet_test database.');
-        }
 
         config(['wallet.api_token' => self::TOKEN]);
     }

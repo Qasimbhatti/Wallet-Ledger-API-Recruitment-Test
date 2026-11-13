@@ -72,10 +72,24 @@ return [
             EnsureUploadedFilesCanBeMoved::class,
         ],
 
+        // Trimmed from Octane's defaults to what this API actually uses (config,
+        // DB, log, router, HTTP kernel, request). No sessions, cookies, auth
+        // guards, views, mail, queues, broadcasting, translations or Vite are
+        // ever touched, so resetting them on every request is pure overhead.
         RequestReceived::class => [
-            ...Octane::prepareApplicationForNextOperation(),
-            ...Octane::prepareApplicationForNextRequest(),
-            //
+            \Laravel\Octane\Listeners\CreateConfigurationSandbox::class,
+            \Laravel\Octane\Listeners\GiveNewApplicationInstanceToDatabaseManager::class,
+            \Laravel\Octane\Listeners\GiveNewApplicationInstanceToHttpKernel::class,
+            \Laravel\Octane\Listeners\GiveNewApplicationInstanceToLogManager::class,
+            \Laravel\Octane\Listeners\GiveNewApplicationInstanceToPipelineHub::class,
+            \Laravel\Octane\Listeners\GiveNewApplicationInstanceToRouter::class,
+            \Laravel\Octane\Listeners\FlushDatabaseRecordModificationState::class,
+            \Laravel\Octane\Listeners\FlushDatabaseQueryLog::class,
+            \Laravel\Octane\Listeners\RefreshQueryDurationHandling::class,
+            \Laravel\Octane\Listeners\FlushLogContext::class,
+            \Laravel\Octane\Listeners\FlushMonologState::class,
+            \Laravel\Octane\Listeners\FlushOnce::class,
+            \Laravel\Octane\Listeners\GiveNewRequestInstanceToApplication::class,
         ],
 
         RequestHandled::class => [

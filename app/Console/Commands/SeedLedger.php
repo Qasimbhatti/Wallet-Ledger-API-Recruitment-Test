@@ -139,7 +139,12 @@ final class SeedLedger extends Command
         $this->step('Commit', fn () => $db->commit());
 
         // Outside the transaction: sets hint bits / visibility map and stats.
-        $this->step('VACUUM ANALYZE', fn () => $db->unprepared('VACUUM (ANALYZE) ledger_entries; VACUUM (ANALYZE) wallets;'));
+        // One statement per call: a multi-statement string is an implicit
+        // transaction block, where VACUUM is not allowed.
+        $this->step('VACUUM ANALYZE', function () use ($db) {
+            $db->unprepared('VACUUM (ANALYZE) ledger_entries');
+            $db->unprepared('VACUUM (ANALYZE) wallets');
+        });
 
         $stats = $db->selectOne(<<<'SQL'
             SELECT (SELECT count(*) FROM ledger_entries) AS rows,

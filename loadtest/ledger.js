@@ -60,7 +60,7 @@ function record(phase, endpoint, res, allowed) {
   const ok = allowed.includes(res.status);
   if (!ok) {
     unexpected.add(1);
-    console.error(`${endpoint} -> ${res.status}: ${res.body}`);
+    console.error(`${endpoint} -> ${res.status}: ${res.status === 0 ? res.error : res.body}`);
   }
   check(res, { [`${endpoint} status expected`]: () => ok });
 }

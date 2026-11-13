@@ -35,7 +35,7 @@ docker compose exec app php artisan ledger:seed --force --scale=0.1  # ≈1.1M r
 
 The seed runs entirely inside PostgreSQL (`generate_series`), in a single transaction that starts with `TRUNCATE`. Indexes are dropped before the load and rebuilt after it. With `wal_level=minimal` this lets PostgreSQL skip WAL for the bulk insert. Wallets are then built by aggregating the ledger. Before committing, the seed checks every wallet against an independent closed-form expected balance.
 
-**Seed time on my machine: `TODO: fill in after running`.** The command prints the total time and a per-step breakdown.
+**Seed time on my machine: 90 s for 10.75M rows** (69 s insert, 9 s index rebuild, 3 s wallets, 6 s commit, 1 s vacuum), and 10 s for 1.16M rows. The command prints the total time and a per-step breakdown.
 
 The seed meets the brief's "no balance below 0 at any point" rule by construction. Each user's history is a series of (credit, debit) pairs. User *i* has a fixed positive net per pair, *n*, and the debit of pair *k* is `credit_k − n`. The balance after pair *k* is therefore `k·n`, which is always positive, and `balance_after` can be written without a running-sum pass. Amounts come from a hash, so the seed is deterministic.
 
@@ -64,8 +64,10 @@ The concurrency suite ([tests/Concurrency/ConcurrencyTest.php](tests/Concurrency
 ### Load test
 
 ```bash
-docker compose --profile loadtest run --rm k6        # VUS=100 DURATION=60s by default
+docker compose --profile loadtest run --rm --no-deps k6   # VUS=100 DURATION=60s by default
 ```
+
+`--no-deps` stops Compose from re-creating the running `app` container when your shell's variables differ from the ones it was started with (for example `OCTANE_WORKERS`).
 
 [loadtest/ledger.js](loadtest/ledger.js) runs in two phases:
 
@@ -95,16 +97,38 @@ WHERE w.balance IS DISTINCT FROM l.b;
 
 ## 2. Results
 
-> **TODO:** These numbers were not measured yet. Run the commands above and paste the output here.
+**Machine:** Windows 11 laptop, Docker Desktop (WSL2) with 8 vCPUs and 16 GB. k6, the API and PostgreSQL all share those 8 vCPUs. The load is 100 VUs in a closed loop with no think time, 60 s per phase. Raw output is in [loadtest/results/](loadtest/results/).
 
-| | 1M rows (`--scale=0.1`) | 10M rows |
+| p50 / p99 (ms) | 1.16M rows (`--scale=0.1`) | 10.75M rows |
 |---|---|---|
-| credit p50 / p99 (ms) | | |
-| debit p50 / p99 (ms) | | |
-| balance p50 / p99 (ms) | | |
-| hot user credit/debit p50 / p99 (ms) | | |
-| bystander p50 / p99 during hot phase (ms) | | |
-| Seed duration | | |
+| **credit** (mixed phase) | 97.1 / 239.7 | 82.5 / 197.5 |
+| **debit** (mixed phase) | 92.9 / 236.7 | 81.4 / 199.1 |
+| **get_balance** (mixed phase) | 91.6 / 244.2 | 76.3 / 192.6 |
+| hot user credit, 70 VUs on one user | 563 / 4,042 | 381 / 2,942 |
+| hot user debit | 433 / 3,161 | 311 / 2,329 |
+| bystander credit during hot phase | 39.7 / 84.8 | 35.6 / 83.8 |
+| bystander get_balance during hot phase | 29.2 / 73.7 | 27.7 / 71.0 |
+| throughput (both phases) | 912 req/s | 1,049 req/s |
+| unexpected responses | **0** | **0** |
+| `ledger:reconcile --deep` afterwards | 0 mismatches | 0 mismatches |
+| seed duration | 10 s | 90 s |
+
+**How to read these numbers:**
+
+- **Latency does not grow with table size.** The 10M run is as fast as the 1M run; the gap between them is run-to-run noise. Every hot-path query is a primary-key probe or an append (see §5).
+- **The mixed-phase p50 is queueing, not query time.** One request on an idle system takes **1.85 ms** end to end (p99 3.75 ms, `get_balance`, 1 VU), and the three SQL statements execute in 0.1–0.8 ms. With 100 VUs and no think time, the machine saturates its 8 shared vCPUs at about 1,000–1,800 req/s. By Little's law, latency ≈ 100 / throughput ≈ 80–95 ms. On a faster machine the same code scales with the cores.
+- **Hot user:** every write to one user serialises on one row lock, which is released only after the WAL `fdatasync`. On this disk `pg_test_fsync` measures **2.7 ms per fdatasync**, so one user is bounded at roughly 300 writes/s on an idle machine, and fewer under full CPU load. With 70 VUs queued on that single row, a p50 of about 300–550 ms is the expected queue length.
+- **Isolation holds.** While 70 VUs hammer the hot user, bystanders keep a p50 of 28–40 ms, *lower* than in the mixed phase, because fewer VUs compete for CPU.
+
+**Worker-count experiment** (20 s phases, 1.16M rows):
+
+| `OCTANE_WORKERS` | mixed p50 | bystander p50 during hot phase |
+|---|---|---|
+| 32 | 77 ms | **175 ms**: the hot user's waiting requests hold every worker |
+| 64 | 84 ms | 65 ms |
+| **128** (default) | 85 ms | **30 ms** |
+
+Fewer workers do not make the mixed phase faster, but they let a hot user starve everyone else. That is why the default is 128, above the number of concurrent clients.
 
 ---
 
@@ -204,6 +228,7 @@ Validation is hand-written instead of using Laravel's validator, because the con
 ### Runtime
 
 - **Octane + FrankenPHP worker mode:** Laravel boots once per worker instead of once per request.
+- **Trimmed Octane reset listeners** ([config/octane.php](config/octane.php)): only the 13 listeners for services this API actually uses run on each request (config, DB, log, router, kernel). Octane's default is about 40. This raised `get_balance` throughput from about 1,075 to about 1,280 req/s under 100 VUs.
 - **One query, one round trip:** `PDO::PGSQL_ATTR_DISABLE_PREPARES` makes pdo_pgsql use `PQexecParams`. Parameters are still bound server-side, but the separate Parse/Describe round trip of a named prepared statement is gone.
 - The global middleware stack is cut down to one middleware. There are no sessions, cookies, CSRF or views.
 
@@ -244,46 +269,70 @@ docker compose exec app php artisan ledger:explain               # user_000000, 
 docker compose exec app php artisan ledger:explain user_054321   # a small user
 ```
 
-> **TODO:** paste the real `EXPLAIN (ANALYZE, BUFFERS)` output here. The shapes below are the **expected** plans.
+Real `EXPLAIN (ANALYZE, BUFFERS)` output on the **10.75M-row** database, for `user_000000` (the user with the longest history, 150k ledger rows). Also saved in [loadtest/results/explain-10M.txt](loadtest/results/explain-10M.txt).
 
-**get_balance**: one index probe, independent of ledger size:
+**get_balance**: one primary-key probe, 4 buffers, 0.08 ms:
 ```
-Index Scan using wallets_pkey on wallets
+Index Scan using wallets_pkey on wallets  (cost=0.42..2.64 rows=1 width=8) (actual time=0.042..0.043 rows=1 loops=1)
   Index Cond: ((user_id)::text = 'user_000000'::text)
+  Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=67
+Planning Time: 0.629 ms
+Execution Time: 0.082 ms
 ```
 
-**credit**: upsert through the primary key, plus a single-row append to the ledger:
+**credit**: an upsert through the primary key plus a single-row append to the ledger, 0.8 ms:
 ```
-CTE Scan on wallet
+CTE Scan on wallet  (cost=0.04..0.06 rows=1 width=8) (actual time=0.176..0.178 rows=1 loops=1)
+  Buffers: shared hit=12
   CTE wallet
-    ->  Insert on wallets w
+    ->  Insert on wallets w  (cost=0.00..0.01 rows=1 width=170) (actual time=0.173..0.175 rows=1 loops=1)
           Conflict Resolution: UPDATE
           Conflict Arbiter Indexes: wallets_pkey
-          ->  Result
+          Tuples Inserted: 0
+          Conflicting Tuples: 1
+          Buffers: shared hit=12
+          ->  Result  (cost=0.00..0.01 rows=1 width=170) (actual time=0.002..0.002 rows=1 loops=1)
   CTE entry
-    ->  Insert on ledger_entries
-          ->  CTE Scan on wallet wallet_1
+    ->  Insert on ledger_entries  (cost=0.00..0.03 rows=0 width=0) (actual time=0.513..0.513 rows=0 loops=1)
+          Buffers: shared hit=56
+          ->  CTE Scan on wallet wallet_1  (cost=0.00..0.03 rows=1 width=182) (actual time=0.138..0.139 rows=1 loops=1)
+                Buffers: shared hit=10
+Planning Time: 0.076 ms
+Execution Time: 0.842 ms
 ```
 
-**debit**: guarded update through the primary key, plus a single-row append:
+**debit**: a guarded update through the primary key plus a single-row append, 0.2 ms:
 ```
-Result
+Result  (cost=5.32..5.33 rows=1 width=16) (actual time=0.069..0.070 rows=1 loops=1)
+  Buffers: shared hit=10
   CTE wallet
-    ->  Update on wallets
-          ->  Index Scan using wallets_pkey on wallets
+    ->  Update on wallets  (cost=0.42..2.64 rows=1 width=22) (actual time=0.054..0.055 rows=1 loops=1)
+          Buffers: shared hit=6
+          ->  Index Scan using wallets_pkey on wallets  (cost=0.42..2.64 rows=1 width=22) (actual time=0.022..0.023 rows=1 loops=1)
                 Index Cond: ((user_id)::text = 'user_000000'::text)
                 Filter: (balance >= '1'::bigint)
+                Buffers: shared hit=4
   CTE entry
-    ->  Insert on ledger_entries
-          ->  CTE Scan on wallet wallet_1
-  InitPlan
-    ->  CTE Scan on wallet
-  InitPlan
-    ->  Index Scan using wallets_pkey on wallets wallets_1
+    ->  Insert on ledger_entries  (cost=0.00..0.03 rows=0 width=0) (actual time=0.033..0.033 rows=0 loops=1)
+          Buffers: shared hit=7
+          ->  CTE Scan on wallet  (cost=0.00..0.03 rows=1 width=182) (actual time=0.005..0.006 rows=1 loops=1)
+                Buffers: shared hit=1
+  InitPlan 3
+    ->  CTE Scan on wallet wallet_1  (cost=0.00..0.02 rows=1 width=8) (actual time=0.056..0.057 rows=1 loops=1)
+          Buffers: shared hit=6
+  InitPlan 4
+    ->  Index Scan using wallets_pkey on wallets wallets_1  (cost=0.42..2.64 rows=1 width=8) (actual time=0.010..0.010 rows=1 loops=1)
           Index Cond: ((user_id)::text = 'user_000000'::text)
+          Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=8
+Planning Time: 0.202 ms
+Execution Time: 0.195 ms
 ```
 
-None of the three plans touches more than one wallet row or reads any ledger row. The only cost that grows with table size is the B-tree depth of the inserts into `ledger_entries_pkey` and `(user_id, id)`, which is logarithmic. That is why latency at 1M and 10M rows should be nearly identical.
+None of the three plans touches more than one wallet row or reads any ledger row. The only cost that grows with table size is the B-tree depth of the inserts into `ledger_entries_pkey` and `(user_id, id)`, which is logarithmic. That is why the measured latency at 1M and 10M rows is the same.
 
 ---
 

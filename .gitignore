@@ -4,10 +4,12 @@
 /storage/*.key
 /loadtest/results/*
 !/loadtest/results/.gitkeep
-.env
+!/loadtest/results/summary-1M.md
+!/loadtest/results/summary-10M.md
+!/loadtest/results/explain-10M.txt
 .env.backup
 .phpunit.result.cache
 /.idea
-/.vscode
 # The assessment brief is confidential.
 *.pdf
+config.bat
